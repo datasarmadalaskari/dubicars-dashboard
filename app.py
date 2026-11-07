@@ -140,7 +140,9 @@ def load(src, stamp):                       # stamp in the key -> reloads when t
     # (price_history only keeps a row when the price moves)
     h = hist.assign(day=hist["checked_at"].dt.normalize()).sort_values("checked_at")
     h = h.groupby(["_key", "day"])["price_aed"].last().reset_index()
-    end = df.set_index("_key")["last_seen_at"].dt.normalize()
+    # an ad that is now "price on request" stops at its last real price
+    end = df.set_index("_key")["last_seen_at"].dt.normalize()\
+        .where(df.set_index("_key")["price_aed"].notna())
     span = h.groupby("_key")["day"].agg(["min", "max"])
     span["end"] = pd.concat([span["max"], end.reindex(span.index)], axis=1).max(axis=1)
     rows = [(k, d) for k, r in span.iterrows() for d in pd.date_range(r["min"], r["end"], freq="D")]
