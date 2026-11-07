@@ -100,12 +100,14 @@ def load(src, stamp):                       # stamp in the key -> reloads when t
         else "car_id"
     df["_key"] = df[key].astype(str)
     hist["_key"] = hist[key].astype(str)
+    def col(c, default=None):                          # works with old files too
+        return df[c] if c in df.columns else pd.Series(default, index=df.index)
     for c in ["first_seen_at", "last_seen_at"]:
-        df[c] = pd.to_datetime(df.get(c), errors="coerce")
+        df[c] = pd.to_datetime(col(c), errors="coerce")
     for c in ["price_aed", "year"]:
-        df[c] = pd.to_numeric(df.get(c), errors="coerce")
+        df[c] = pd.to_numeric(col(c), errors="coerce")
     for c in ["make", "model", "seller_name", "ad_status"]:
-        df[c] = df.get(c, "").fillna("").astype(str).str.strip()
+        df[c] = col(c, "").fillna("").astype(str).str.strip()
     df["ad_status"] = df["ad_status"].replace("", "Active")
     df["car"] = (df["make"].str.title() + " " + df["model"].str.title() + " "
                  + df["year"].astype("Int64").astype(str)).str.strip()
