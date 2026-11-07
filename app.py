@@ -1,15 +1,3 @@
-"""
-Chinese-spec car market (DubiCars) - one-page executive dashboard (Streamlit)
-
-Runs on Streamlit Community Cloud. Reads dubicars_chinese.xlsx from Google
-Drive - the daily 07:00 run on the VPS replaces that same Drive file, so the
-dashboard always shows the latest scrape (re-checked every hour).
-
-Secrets (Streamlit Cloud -> app -> Settings -> Secrets):
-    drive_link = "https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing"
-    password   = "..."          # optional
-Without drive_link it looks for dubicars_chinese.xlsx next to this file.
-"""
 import hmac
 import io
 import os
@@ -251,32 +239,30 @@ def money(v):
     return f"{v / 1e6:,.2f}M {CUR}" if v >= 1e6 else f"{v / 1e3:,.1f}K {CUR}"
 
 
-k = st.columns(6)
+k = st.columns(5)
 k[0].metric("Cars for sale now", f"{len(live):,}")
-med, avg = live["price_aed"].median(), live["price_aed"].mean()
+med = live["price_aed"].median()
 k[1].metric("Median price", money(med),
             help="The middle price: half the cars cost less, half cost more.")
-k[2].metric("Average price", money(avg),
-            help="Sum of all prices / number of cars. Pulled up by a few very expensive cars.")
 if avg_chg is None:
-    k[3].metric(f"Prices vs last {grain_txt}", "—")
+    k[2].metric(f"Prices vs last {grain_txt}", "—")
 else:
     word = "Up" if avg_chg > 0.05 else "Down" if avg_chg < -0.05 else "Flat"
-    k[3].metric(f"Prices vs last {grain_txt}", word, f"{avg_chg:+.1f}%",
+    k[2].metric(f"Prices vs last {grain_txt}", word, f"{avg_chg:+.1f}%",
                 delta_color="inverse" if word != "Flat" else "off")
-k[4].metric("Cars that got cheaper", f"{cut:,}", f"{rise:,} got more expensive",
+k[3].metric("Cars that got cheaper", f"{cut:,}", f"{rise:,} got more expensive",
             delta_color="off")
 
 lr = live_rate()
 if lr:
     rate, when, src = lr
     diff = (file_rate / rate - 1) * 100
-    k[5].metric("1 USD =", f"{file_rate:.4f} AED", f"today {rate:.4f} ({diff:+.2f}%)",
+    k[4].metric("1 USD =", f"{file_rate:.4f} AED", f"today {rate:.4f} ({diff:+.2f}%)",
                 delta_color="off",
                 help=f"Our data uses the UAE fixed peg ({file_rate:.4f}). Market rate from "
                      f"{src} ({when}). The AED is pegged to the USD, so the difference is ~0.")
 else:
-    k[5].metric("1 USD =", f"{file_rate:.4f} AED", "UAE fixed peg", delta_color="off",
+    k[4].metric("1 USD =", f"{file_rate:.4f} AED", "UAE fixed peg", delta_color="off",
                 help="Today's market rate couldn't be loaded right now.")
 
 st.divider()
