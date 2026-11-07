@@ -176,13 +176,26 @@ h1.title("🚗 Chinese-spec cars — UAE market")
 h1.caption(f"DubiCars · last scrape {last_scrape:%d %b %Y, %H:%M} · data since "
            f"{df['first_seen_at'].min():%d %b %Y}"
            + (f" · file from {updated:%d %b %H:%M}" if updated is not None else ""))
-makes = sorted(m for m in df["make"].unique() if m)
-pick = h2.multiselect("Brand", makes, placeholder="All brands")
+h2.write("")
 b1, b2 = h2.columns([2, 1])
-CUR = b1.radio("Currency", ["AED", "USD"], horizontal=True, label_visibility="collapsed")
+CUR = b1.radio("Currency", ["AED", "USD"], horizontal=True)
+b2.write("")
 if b2.button("↻ Refresh data", help="Read the latest file from Google Drive now"):
     st.cache_data.clear()
     st.rerun()
+
+# ---- filters: make -> model (only models of the chosen makes) -> year
+df["model_t"] = df["model"].str.title()
+f1, f2, f3 = st.columns([1, 1.4, 1])
+makes = sorted(m for m in df["make"].unique() if m)
+pick = f1.multiselect("Make", makes, placeholder="All makes")
+sub = df[df["make"].isin(pick)] if pick else df
+models = sorted(m for m in sub["model_t"].unique() if m)
+pick_model = f2.multiselect("Model", models, placeholder="All models")
+if pick_model:
+    sub = sub[sub["model_t"].isin(pick_model)]
+years = sorted(int(y) for y in sub["year"].dropna().unique())
+pick_year = f3.multiselect("Year", years, placeholder="All years")
 
 # rate used in the file (price_aed / price_usd), falls back to the peg
 ok = (df["price_aed"] > 0) & (df["price_usd"] > 0)
@@ -192,7 +205,14 @@ df = df.assign(price_aed=df["price_aed"] * FX)
 daily = daily.assign(price_aed=daily["price_aed"] * FX)
 if pick:
     df = df[df["make"].isin(pick)]
-    daily = daily[daily["make"].isin(pick)]
+if pick_model:
+    df = df[df["model_t"].isin(pick_model)]
+if pick_year:
+    df = df[df["year"].isin(pick_year)]
+daily = daily[daily["_key"].isin(df["_key"])]
+if df.empty:
+    st.warning("No cars match these filters.")
+    st.stop()
 
 live = df[df["ad_status"] == "Active"]
 grain = "M"                      # monthly view
@@ -231,7 +251,7 @@ def money(v):
     return f"{v / 1e6:,.2f}M {CUR}" if v >= 1e6 else f"{v / 1e3:,.1f}K {CUR}"
 
 
-k = st.columns(5)
+k = st.columns(6)
 k[0].metric("Cars for sale now", f"{len(live):,}")
 med, avg = live["price_aed"].median(), live["price_aed"].mean()
 k[1].metric("Median price", money(med),
@@ -251,13 +271,13 @@ lr = live_rate()
 if lr:
     rate, when, src = lr
     diff = (file_rate / rate - 1) * 100
-    st.caption(f"💱 **Rate in our data:** 1 USD = {file_rate:.4f} AED (UAE fixed peg) · "
-               f"**Market rate today:** 1 USD = {rate:.4f} AED ({src}, {when}) · "
-               f"**Difference:** {diff:+.3f}% "
-               f"(= {abs(file_rate - rate) * 1000:,.1f} AED per 1,000 USD)")
+    k[5].metric("1 USD =", f"{file_rate:.4f} AED", f"today {rate:.4f} ({diff:+.2f}%)",
+                delta_color="off",
+                help=f"Our data uses the UAE fixed peg ({file_rate:.4f}). Market rate from "
+                     f"{src} ({when}). The AED is pegged to the USD, so the difference is ~0.")
 else:
-    st.caption(f"💱 **Rate in our data:** 1 USD = {file_rate:.4f} AED (UAE fixed peg) · "
-               "today's market rate couldn't be loaded right now.")
+    k[5].metric("1 USD =", f"{file_rate:.4f} AED", "UAE fixed peg", delta_color="off",
+                help="Today's market rate couldn't be loaded right now.")
 
 st.divider()
 
