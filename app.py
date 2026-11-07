@@ -32,7 +32,7 @@ DATASETS = {
                                     title="🚗 Chinese-spec cars — UAE market"),
     "Luxury cars (Canada & UAE)": dict(secret="drive_link_luxury", file="luxury_cars.xlsx",
                                        kind="luxury", currencies=["USD", "CAD", "AED"],
-                                       title="💎 Luxury cars — Canada & UAE"),
+                                       title="Luxury cars — Canada & UAE"),
 }
 TOP_N = 10
 PEG = 3.6725                  # 1 USD = 3.6725 AED (UAE fixed peg)
@@ -132,7 +132,7 @@ def open_book(src):
 
 LUX_COLS = {"source", "listing_id", "url", "make", "model", "year", "seller_name", "country",
             "price_usd", "price_aed", "price_cad", "status", "first_seen_at", "last_seen_at",
-            "removed_at"}
+            "removed_at", "description", "trim", "mileage_km", "image_1"}
 LUX_HIST_COLS = {"source", "listing_id", "car_listing_id", "price", "recorded_at", "currency"}
 
 
@@ -366,6 +366,51 @@ def render(DS):
         k[4].metric("1 USD =", f"{file_rate:.4f} {rate_cur}",
                     "UAE fixed peg" if pegged else "rate used in our data", delta_color="off",
                     help="Today's market rate couldn't be loaded right now.")
+
+    # ------------------------------------------------------------------ description search
+    q = st.text_input("🔎 Search in the ad descriptions",
+                      placeholder="e.g. warranty, full option, accident free, sunroof ...",
+                      key=f"{DS['kind']}_search",
+                      help='Finds cars whose description has ALL the words you type (any order, '
+                           'not case-sensitive). Put words in "quotes" for an exact phrase, e.g. '
+                           '"5 years". The filters above narrow it further.')
+    if q.strip():
+        desc = df["description"].fillna("").astype(str) if "description" in df.columns \
+            else pd.Series("", index=df.index)
+        if not desc.str.strip().any():
+            st.info("This file has no ad descriptions yet - they come with the next daily scrape.")
+        else:
+            # words in any order; "quoted words" = that exact phrase
+            words = [(a or b).lower() for a, b in re.findall(r'"([^"]+)"|(\S+)', q.strip())]
+            words = [w for w in words if w]
+            low = desc.str.lower()
+            hit = pd.Series(True, index=df.index)
+            for w in words:
+                hit &= low.str.contains(w, regex=False)
+            res = df[hit].copy()
+
+            def snippet(text):
+                t = str(text)
+                i = t.lower().find(max(words, key=len))
+                a, b = max(0, i - 90), min(len(t), i + 160)
+                return ("…" if a else "") + t[a:b].replace("\n", " ") + ("…" if b < len(t) else "")
+            res["found"] = desc[hit].map(snippet)
+            res = res.sort_values(["ad_status", "last_seen_at"], ascending=[True, False])
+            n_live = int((res["ad_status"] == "Active").sum())
+            st.caption(f"**{len(res):,}** car(s) mention “{q.strip()}” · {n_live:,} still for sale")
+            cols = [c for c in ["image_1", "car", "trim", "seller_name", "price", "mileage_km",
+                                "ad_status", "found", "url"] if c in res.columns]
+            st.dataframe(res[cols].head(500), hide_index=True, width="stretch", height=380,
+                         column_config={
+                             "image_1": st.column_config.ImageColumn("Photo", width="small"),
+                             "car": "Car", "trim": "Trim", "seller_name": "Dealer",
+                             "price": st.column_config.NumberColumn(f"Price ({CUR})", format="%d"),
+                             "mileage_km": st.column_config.NumberColumn("km", format="%d"),
+                             "ad_status": "Status",
+                             "found": st.column_config.TextColumn("Description", width="large"),
+                             "url": st.column_config.LinkColumn("Ad", display_text="open")})
+            if len(res) > 500:
+                st.caption("Showing the first 500 - add more words or filters to narrow it.")
 
     st.divider()
 
