@@ -29,6 +29,7 @@ CANDIDATES = [os.environ.get("DUBICARS_FILE", ""),
               os.path.join(HERE, "output", FILE_NAME),
               os.path.join(HERE, FILE_NAME)]
 TOP_N = 10
+PEG = 3.6725                  # 1 USD = 3.6725 AED - the rate the scraper uses (UAE fixed peg)
 UP, DOWN, FLAT = "#d1495b", "#2a9d8f", "#8d99ae"   # price up = red, down = green
 
 st.markdown("""<style>
@@ -60,6 +61,25 @@ if not password_ok():
     st.stop()
 
 
+# ------------------------------------------------------------------ exchange rate
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def live_rate():
+    """today's market USD->AED rate (None if the lookup fails)"""
+    import requests
+    for url, pick in [("https://open.er-api.com/v6/latest/USD",
+                       lambda j: (j["rates"]["AED"], j.get("time_last_update_utc", "")[:16])),
+                      ("https://api.frankfurter.dev/v1/latest?base=USD&symbols=AED",
+                       lambda j: (j["rates"]["AED"], j.get("date", "")))]:
+        try:
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            rate, when = pick(r.json())
+            return float(rate), when, url.split("/")[2]
+        except Exception:
+            continue
+    return None
+
+
 # ------------------------------------------------------------------ data
 def secret(name):
     try:
@@ -68,7 +88,7 @@ def secret(name):
         return ""
 
 
-@st.cache_data(show_spinner="Getting the latest data...", ttl=3600)
+@st.cache_data(show_spinner="Getting the latest data...", ttl=900)
 def fetch_drive(link):
     """download the Drive file (shared as 'Anyone with the link')"""
     import requests
@@ -104,7 +124,7 @@ def load(src, stamp):                       # stamp in the key -> reloads when t
         return df[c] if c in df.columns else pd.Series(default, index=df.index)
     for c in ["first_seen_at", "last_seen_at"]:
         df[c] = pd.to_datetime(col(c), errors="coerce")
-    for c in ["price_aed", "year"]:
+    for c in ["price_aed", "price_usd", "year"]:
         df[c] = pd.to_numeric(col(c), errors="coerce")
     for c in ["make", "model", "seller_name", "ad_status"]:
         df[c] = col(c, "").fillna("").astype(str).str.strip()
@@ -154,9 +174,22 @@ last_scrape = df["last_seen_at"].max()
 h1, h2 = st.columns([3, 2])
 h1.title("🚗 Chinese-spec cars — UAE market")
 h1.caption(f"DubiCars · last scrape {last_scrape:%d %b %Y, %H:%M} · data since "
-           f"{df['first_seen_at'].min():%d %b %Y}")
+           f"{df['first_seen_at'].min():%d %b %Y}"
+           + (f" · file from {updated:%d %b %H:%M}" if updated is not None else ""))
 makes = sorted(m for m in df["make"].unique() if m)
 pick = h2.multiselect("Brand", makes, placeholder="All brands")
+b1, b2 = h2.columns([2, 1])
+CUR = b1.radio("Currency", ["AED", "USD"], horizontal=True, label_visibility="collapsed")
+if b2.button("↻ Refresh data", help="Read the latest file from Google Drive now"):
+    st.cache_data.clear()
+    st.rerun()
+
+# rate used in the file (price_aed / price_usd), falls back to the peg
+ok = (df["price_aed"] > 0) & (df["price_usd"] > 0)
+file_rate = float((df.loc[ok, "price_aed"] / df.loc[ok, "price_usd"]).median()) if ok.any() else PEG
+FX = 1.0 if CUR == "AED" else 1 / file_rate
+df = df.assign(price_aed=df["price_aed"] * FX)
+daily = daily.assign(price_aed=daily["price_aed"] * FX)
 if pick:
     df = df[df["make"].isin(pick)]
     daily = daily[daily["make"].isin(pick)]
@@ -192,18 +225,39 @@ rise = int((ads_cmp["change_pct"] > 0.5).sum()) if len(ads_cmp) else 0
 avg_chg = ads_cmp["change_pct"].mean() if len(ads_cmp) else None
 
 # ------------------------------------------------------------------ KPIs
-k = st.columns(4)
+def money(v):
+    if pd.isna(v):
+        return "—"
+    return f"{v / 1e6:,.2f}M {CUR}" if v >= 1e6 else f"{v / 1e3:,.1f}K {CUR}"
+
+
+k = st.columns(5)
 k[0].metric("Cars for sale now", f"{len(live):,}")
-med = live["price_aed"].median()
-k[1].metric("Typical price", "—" if pd.isna(med) else f"{med / 1000:,.0f}K AED")
+med, avg = live["price_aed"].median(), live["price_aed"].mean()
+k[1].metric("Median price", money(med),
+            help="The middle price: half the cars cost less, half cost more.")
+k[2].metric("Average price", money(avg),
+            help="Sum of all prices / number of cars. Pulled up by a few very expensive cars.")
 if avg_chg is None:
-    k[2].metric(f"Prices vs last {grain_txt}", "—")
+    k[3].metric(f"Prices vs last {grain_txt}", "—")
 else:
-    word = "up" if avg_chg > 0.05 else "down" if avg_chg < -0.05 else "flat"
-    k[2].metric(f"Prices vs last {grain_txt}", f"{avg_chg:+.1f}%", word,
-                delta_color="inverse" if word != "flat" else "off")
-k[3].metric("Cars that got cheaper", f"{cut:,}", f"{rise:,} got more expensive",
+    word = "Up" if avg_chg > 0.05 else "Down" if avg_chg < -0.05 else "Flat"
+    k[3].metric(f"Prices vs last {grain_txt}", word, f"{avg_chg:+.1f}%",
+                delta_color="inverse" if word != "Flat" else "off")
+k[4].metric("Cars that got cheaper", f"{cut:,}", f"{rise:,} got more expensive",
             delta_color="off")
+
+lr = live_rate()
+if lr:
+    rate, when, src = lr
+    diff = (file_rate / rate - 1) * 100
+    st.caption(f"💱 **Rate in our data:** 1 USD = {file_rate:.4f} AED (UAE fixed peg) · "
+               f"**Market rate today:** 1 USD = {rate:.4f} AED ({src}, {when}) · "
+               f"**Difference:** {diff:+.3f}% "
+               f"(= {abs(file_rate - rate) * 1000:,.1f} AED per 1,000 USD)")
+else:
+    st.caption(f"💱 **Rate in our data:** 1 USD = {file_rate:.4f} AED (UAE fixed peg) · "
+               "today's market rate couldn't be loaded right now.")
 
 st.divider()
 
@@ -224,13 +278,13 @@ with c1:
                           legend=dict(orientation="h", y=-0.15), hovermode="x unified")
         fig.update_xaxes(title=None, tickformat="%d %b" if grain == "W" else "%b %Y",
                          dtick=None if grain == "W" else "M1")
-        fig.update_yaxes(title="AED", tickformat=",.0f")
+        fig.update_yaxes(title=CUR, tickformat=",.0f")
         st.plotly_chart(fig, width="stretch")
-    st.caption("Each point = the car's median price that month (each ad's last price in "
-               "the month). The current month is month-to-date.")
+    st.caption(f"Each point = the car's median price that month in {CUR} (each ad's last "
+               "price in the month). The current month is month-to-date.")
 
 with c2:
-    st.subheader(f"Top {TOP_N} cars: before vs now")
+    st.subheader(f"Top {TOP_N} cars: median price before vs now ({CUR})")
     t = compare("car")
     t = t[t["car"].isin(top_cars)] if len(t) else t
     if t.empty:
