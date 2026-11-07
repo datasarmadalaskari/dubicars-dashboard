@@ -1,3 +1,15 @@
+"""
+Chinese-spec car market (DubiCars) - one-page executive dashboard (Streamlit)
+
+Runs on Streamlit Community Cloud. Reads dubicars_chinese.xlsx from Google
+Drive - the daily 07:00 run on the VPS replaces that same Drive file, so the
+dashboard always shows the latest scrape (re-checked every hour).
+
+Secrets (Streamlit Cloud -> app -> Settings -> Secrets):
+    drive_link = "https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing"
+    password   = "..."          # optional
+Without drive_link it looks for dubicars_chinese.xlsx next to this file.
+"""
 import hmac
 import io
 import os
@@ -332,15 +344,75 @@ with c4:
     fig.update_xaxes(title=None, showticklabels=False)
     st.plotly_chart(fig, width="stretch")
 
-with st.expander("Biggest price changes (single ads)"):
-    if len(ads_cmp):
-        big = ads_cmp.merge(df[["_key", "car", "seller_name", "url"]] if "url" in df
-                            else df[["_key", "car", "seller_name"]], on="_key")
-        big = big[big["change_pct"].abs() > 0.5].reindex(
-            big["change_pct"].abs().sort_values(ascending=False).index).head(20)
-        st.dataframe(big.drop(columns="_key"), hide_index=True, width="stretch",
-                     column_config={"before": st.column_config.NumberColumn(format="%d"),
-                                    "now": st.column_config.NumberColumn(format="%d"),
-                                    "change_pct": st.column_config.NumberColumn(
-                                        "change", format="%+.1f%%"),
-                                    "url": st.column_config.LinkColumn(display_text="open")})
+# ------------------------------------------------------------------ price changes per ad
+def last_changes(daily, df):
+    """per ad: its last price change - old price, since when, changed on, days at each price"""
+    d = daily.dropna(subset=["price_aed"]).sort_values(["_key", "day"])[["_key", "day", "price_aed"]]
+    if d.empty:
+        return pd.DataFrame()
+    prev = d.groupby("_key")["price_aed"].shift()
+    d["new_run"] = prev.isna() | ((d["price_aed"] - prev).abs() > 0.5)
+    d["run"] = d.groupby("_key")["new_run"].cumsum()
+    runs = d.groupby(["_key", "run"]).agg(price=("price_aed", "first"),
+                                          start=("day", "min"), end=("day", "max")).reset_index()
+    n = runs.groupby("_key")["run"].transform("max")
+    runs = runs[n >= 2]
+    if runs.empty:
+        return pd.DataFrame()
+    last = runs.groupby("_key").tail(2)
+    old = last.groupby("_key").head(1).set_index("_key")
+    new = last.groupby("_key").tail(1).set_index("_key")
+    first_seen = df.set_index("_key")["first_seen_at"].dt.normalize()
+    out = pd.DataFrame({
+        "old_price": old["price"],
+        "since": pd.concat([old["start"], first_seen.reindex(old.index)], axis=1).min(axis=1)
+                 .where(old["run"] == 1, old["start"]),
+        "changed_on": new["start"],
+        "new_price": new["price"],
+        "last_seen": new["end"],
+        "changes": runs.groupby("_key")["run"].max() - 1,
+    })
+    out["days_at_old_price"] = (out["changed_on"] - out["since"]).dt.days
+    out["days_at_new_price"] = (out["last_seen"] - out["changed_on"]).dt.days
+    out["change_pct"] = (out["new_price"] / out["old_price"] - 1) * 100
+    return out.reset_index()
+
+
+with st.expander("Price changes per ad: old price, since when, when it changed", expanded=False):
+    lc = last_changes(daily, df)
+    if lc.empty:
+        st.info("No ad has changed its price yet.")
+    else:
+        cols = ["_key", "car", "seller_name"] + (["url"] if "url" in df.columns else [])
+        lc = lc.merge(df[cols], on="_key")
+        o1, o2 = st.columns([2, 1])
+        order = o1.radio("Sort by", ["Most recent change", "Biggest change %", "Longest at old price"],
+                         horizontal=True)
+        direction = o2.radio("Show", ["All", "⬇️ cheaper", "⬆️ pricier"], horizontal=True)
+        if direction == "⬇️ cheaper":
+            lc = lc[lc["change_pct"] < 0]
+        elif direction == "⬆️ pricier":
+            lc = lc[lc["change_pct"] > 0]
+        if order == "Most recent change":
+            lc = lc.sort_values("changed_on", ascending=False)
+        elif order == "Biggest change %":
+            lc = lc.reindex(lc["change_pct"].abs().sort_values(ascending=False).index)
+        else:
+            lc = lc.sort_values("days_at_old_price", ascending=False)
+        show = ["car", "seller_name", "old_price", "since", "changed_on", "days_at_old_price",
+                "new_price", "days_at_new_price", "change_pct", "changes"] + \
+               (["url"] if "url" in lc.columns else [])
+        st.caption(f"{len(lc):,} ads changed price. Dates are scrape dates: 'changed on' is the first "
+                   "scrape that saw the new price. Days at new price = until the ad was last seen.")
+        st.dataframe(lc[show], hide_index=True, width="stretch", height=420,
+                     column_config={
+                         "car": "Car", "seller_name": "Dealer",
+                         "old_price": st.column_config.NumberColumn(f"Old price ({CUR})", format="%d"),
+                         "since": st.column_config.DateColumn("Since", format="DD MMM YYYY"),
+                         "changed_on": st.column_config.DateColumn("Changed on", format="DD MMM YYYY"),
+                         "days_at_old_price": st.column_config.NumberColumn("Days at old price"),
+                         "new_price": st.column_config.NumberColumn(f"New price ({CUR})", format="%d"),
+                         "days_at_new_price": st.column_config.NumberColumn("Days at new price"),
+                         "change_pct": st.column_config.NumberColumn("Change", format="%+.1f%%"),
+                         "changes": st.column_config.NumberColumn("Changes", help="How many times this ad changed price"),
+                         "url": st.column_config.LinkColumn("Ad", display_text="open")})
