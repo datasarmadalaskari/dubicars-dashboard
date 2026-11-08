@@ -35,6 +35,7 @@ DATASETS = {
                                        title="Luxury cars — Canada & UAE"),
 }
 TOP_N = 10
+KM_CUT = 150                  # mileage filter on the Chinese-spec tab: under / over this
 PEG = 3.6725                  # 1 USD = 3.6725 AED (UAE fixed peg)
 UP, DOWN, FLAT = "#d1495b", "#2a9d8f", "#8d99ae"   # price up = red, down = green
 
@@ -279,6 +280,13 @@ def render(DS):
         sub = sub[sub["model_t"].isin(pick_model)]
     years = sorted(int(y) for y in sub["year"].dropna().unique())
     pick_year = f3.multiselect("Year", years, key=f"{DS['kind']}_year", placeholder="All years")
+    # mileage: All / under 150 km / 150 km+  (Chinese-spec tab)
+    km_opts = ["All", f"Under {KM_CUT} km", f"{KM_CUT} km+"]
+    pick_km = "All"
+    if DS["kind"] == "dubicars" and "mileage_km" in df.columns:
+        pick_km = st.radio("Mileage", km_opts, horizontal=True, key=f"{DS['kind']}_km",
+                           help=f"Under {KM_CUT} km = new or almost new cars. "
+                                "Ads that show no km appear only under All.")
 
     # prices are stored in USD -> show in the chosen currency
     FX = RATES.get(CUR, 1.0)
@@ -292,6 +300,9 @@ def render(DS):
         df = df[df["model_t"].isin(pick_model)]
     if pick_year:
         df = df[df["year"].isin(pick_year)]
+    if pick_km != "All":
+        km = _num(df["mileage_km"])
+        df = df[(km < KM_CUT) if pick_km == km_opts[1] else (km >= KM_CUT)]
     daily = daily[daily["_key"].isin(df["_key"])]
     if df.empty:
         st.warning("No cars match these filters.")
@@ -420,7 +431,7 @@ def render(DS):
     with c1:
         st.subheader(f"Price per {grain_txt} — most listed cars")
         chosen = st.multiselect("Cars", sorted(df["car"].unique()), default=top_cars[:5],
-                                key=f"{DS['kind']}_cars_{'|'.join(pick + pick_model + [str(y) for y in pick_year] + pick_market)}",
+                                key=f"{DS['kind']}_cars_{'|'.join(pick + pick_model + [str(y) for y in pick_year] + pick_market + [pick_km])}",
                                 label_visibility="collapsed")
         line = per[per["car"].isin(chosen)].groupby(["period", "car"])["price"]\
             .median().reset_index()
