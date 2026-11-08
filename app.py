@@ -23,7 +23,7 @@ import plotly.express as px
 import streamlit as st
 
 st.set_page_config(page_title="Car Market Dashboard", page_icon="🚗", layout="wide",
-                   initial_sidebar_state="collapsed")
+                   initial_sidebar_state="expanded")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATASETS = {
@@ -255,65 +255,65 @@ def render(DS):
                        if "source" in df.columns else "DubiCars")
     last_scrape = df["last_seen_at"].max()
 
-    # ------------------------------------------------------------------ header + filter
-    h1, h2 = st.columns([3, 2])
-    h1.title(DS["title"])
-    h1.caption(f"{SOURCE} · last scrape {last_scrape:%d %b %Y, %H:%M} · data since "
+    # ------------------------------------------------------------------ header
+    st.title(DS["title"])
+    st.caption(f"{SOURCE} · last scrape {last_scrape:%d %b %Y, %H:%M} · data since "
                f"{df['first_seen_at'].min():%d %b %Y}"
                + (f" · file from {updated:%d %b %H:%M}" if updated is not None else ""))
-    h2.write("")
-    b1, b2 = h2.columns([2, 1])
-    CUR = b1.radio("Currency", DS["currencies"], horizontal=True, key=f"{DS['kind']}_cur")
-    b2.write("")
-    if b2.button("↻ Refresh data", help="Read the latest file from Google Drive now",
-                  key=f"{DS['kind']}_refresh"):
-        st.cache_data.clear()
-        st.rerun()
 
-    # ---- filters: (market) -> make -> model (only models of the chosen makes) -> year
+    # ------------------------------------------------------------------ filters (side panel)
+    sb = st.sidebar
+    K = DS["kind"]
+    sb.markdown("### Filters")
     df["model_t"] = df["model"].str.title()
     markets = sorted(m for m in df["market"].dropna().unique() if m)
     sites = sorted(x for x in df["site"].dropna().unique() if x)
-    pick_site = []
-    if len(sites) > 1:
-        fs, f0, f1, f2, f3 = st.columns([0.9, 0.8, 1, 1.4, 1])
-        pick_site = fs.multiselect("Site", sites, key=f"{DS['kind']}_site", placeholder="All sites",
-                                   help="Autotrader = Canada (autotrader.ca), Dubizzle = UAE")
-        pick_market = f0.multiselect("Market", markets, key=f"{DS['kind']}_market", placeholder="All markets")
-    elif len(markets) > 1:
-        f0, f1, f2, f3 = st.columns([0.8, 1, 1.4, 1])
-        pick_market = f0.multiselect("Market", markets, key=f"{DS['kind']}_market", placeholder="All markets")
-    else:
-        f1, f2, f3 = st.columns([1, 1.4, 1])
-        pick_market = []
+    statuses = sorted(df["ad_status"].dropna().unique(),
+                      key=lambda x: (x != "Active", x != "Removed", x))
+    filter_keys = [f"{K}_{n}" for n in ("site", "market", "make", "model", "year", "status", "km")]
+    if sb.button("✕ Clear filters", key=f"{K}_clear", width="stretch"):
+        for fk in filter_keys:
+            st.session_state.pop(fk, None)
+        st.rerun()
+
+    # status: starts on Active only (the cars for sale now)
+    pick_status = sb.multiselect("Status", statuses,
+                                 default=["Active"] if "Active" in statuses else None,
+                                 key=f"{K}_status", placeholder="All statuses",
+                                 help="Starts on Active = cars for sale now. Add Removed to see "
+                                      "sold / taken-down ads too, or clear it for all.")
+    pick_site = sb.multiselect("Site", sites, key=f"{K}_site", placeholder="All sites",
+                               help="Autotrader = Canada (autotrader.ca), Dubizzle = UAE") \
+        if len(sites) > 1 else []
+    pick_market = sb.multiselect("Market", markets, key=f"{K}_market", placeholder="All markets") \
+        if len(markets) > 1 and len(sites) < 2 else []
+    # make -> model (only models of the chosen makes) -> year
     sub = df[df["site"].isin(pick_site)] if pick_site else df
     sub = sub[sub["market"].isin(pick_market)] if pick_market else sub
     makes = sorted(m for m in sub["make"].unique() if m)
-    pick = f1.multiselect("Make", makes, key=f"{DS['kind']}_make", placeholder="All makes")
+    pick = sb.multiselect("Make", makes, key=f"{K}_make", placeholder="All makes")
     if pick:
         sub = sub[sub["make"].isin(pick)]
     models = sorted(m for m in sub["model_t"].unique() if m)
-    pick_model = f2.multiselect("Model", models, key=f"{DS['kind']}_model", placeholder="All models")
+    pick_model = sb.multiselect("Model", models, key=f"{K}_model", placeholder="All models")
     if pick_model:
         sub = sub[sub["model_t"].isin(pick_model)]
     years = sorted(int(y) for y in sub["year"].dropna().unique())
-    pick_year = f3.multiselect("Year", years, key=f"{DS['kind']}_year", placeholder="All years")
-    # mileage: All / under 150 km / 150 km+  (Chinese-spec tab)
+    pick_year = sb.multiselect("Year", years, key=f"{K}_year", placeholder="All years")
+    # mileage: All / under 150 km / 150 km+  (Chinese-spec only)
     km_opts = ["All", f"Under {KM_CUT} km", f"{KM_CUT} km+"]
     pick_km = "All"
-    g1, g2 = st.columns([1.4, 1])
-    # status: starts on Active only (the cars for sale now)
-    statuses = sorted(df["ad_status"].dropna().unique(),
-                      key=lambda x: (x != "Active", x != "Removed", x))
-    pick_status = g1.multiselect("Status", statuses,
-                                 default=["Active"] if "Active" in statuses else None,
-                                 key=f"{DS['kind']}_status", placeholder="All statuses",
-                                 help="Starts on Active = cars for sale now. Add Removed to see "
-                                      "sold / taken-down ads too, or clear it for all.")
-    if DS["kind"] == "dubicars" and "mileage_km" in df.columns:
-        pick_km = g2.radio("Mileage", km_opts, horizontal=True, key=f"{DS['kind']}_km",
+    if K == "dubicars" and "mileage_km" in df.columns:
+        pick_km = sb.radio("Mileage", km_opts, key=f"{K}_km",
                            help=f"Under {KM_CUT} km = new or almost new cars. "
                                 "Ads that show no km appear only under All.")
+
+    sb.divider()
+    CUR = sb.radio("Currency", DS["currencies"], horizontal=True, key=f"{K}_cur")
+    if sb.button("↻ Refresh data", help="Read the latest file from Google Drive now",
+                 key=f"{K}_refresh", width="stretch"):
+        st.cache_data.clear()
+        st.rerun()
 
     # prices are stored in USD -> show in the chosen currency
     FX = RATES.get(CUR, 1.0)
@@ -696,7 +696,7 @@ def render(DS):
                              "url": st.column_config.LinkColumn("Ad", display_text="open")})
 
 
-tabs = st.tabs(list(DATASETS))
-for tab, ds in zip(tabs, DATASETS.values()):
-    with tab:
-        render(ds)
+# which dataset: picked at the top of the side panel (its filters show under it)
+choice = st.sidebar.radio("Dashboard", list(DATASETS), key="dataset")
+st.sidebar.divider()
+render(DATASETS[choice])
