@@ -283,8 +283,17 @@ def render(DS):
     # mileage: All / under 150 km / 150 km+  (Chinese-spec tab)
     km_opts = ["All", f"Under {KM_CUT} km", f"{KM_CUT} km+"]
     pick_km = "All"
+    g1, g2 = st.columns([1.4, 1])
+    # status: starts on Active only (the cars for sale now)
+    statuses = sorted(df["ad_status"].dropna().unique(),
+                      key=lambda x: (x != "Active", x != "Removed", x))
+    pick_status = g1.multiselect("Status", statuses,
+                                 default=["Active"] if "Active" in statuses else None,
+                                 key=f"{DS['kind']}_status", placeholder="All statuses",
+                                 help="Starts on Active = cars for sale now. Add Removed to see "
+                                      "sold / taken-down ads too, or clear it for all.")
     if DS["kind"] == "dubicars" and "mileage_km" in df.columns:
-        pick_km = st.radio("Mileage", km_opts, horizontal=True, key=f"{DS['kind']}_km",
+        pick_km = g2.radio("Mileage", km_opts, horizontal=True, key=f"{DS['kind']}_km",
                            help=f"Under {KM_CUT} km = new or almost new cars. "
                                 "Ads that show no km appear only under All.")
 
@@ -303,12 +312,16 @@ def render(DS):
     if pick_km != "All":
         km = _num(df["mileage_km"])
         df = df[(km < KM_CUT) if pick_km == km_opts[1] else (km >= KM_CUT)]
+    if pick_status:
+        df = df[df["ad_status"].isin(pick_status)]
     daily = daily[daily["_key"].isin(df["_key"])]
     if df.empty:
         st.warning("No cars match these filters.")
         return
 
-    live = df[df["ad_status"] == "Active"]
+    live = df                        # the cars in the chosen status(es) - Active by default
+    status_txt = ("for sale now" if pick_status == ["Active"]
+                  else "· " + " + ".join(pick_status) if pick_status else "· all statuses")
     grain = "M"                      # monthly view
     grain_txt = "month" if grain == "M" else "week"
     daily["period"] = daily["day"].dt.to_period(grain).dt.start_time
@@ -347,7 +360,7 @@ def render(DS):
 
 
     k = st.columns(5)
-    k[0].metric("Cars for sale now", f"{len(live):,}")
+    k[0].metric(f"Cars {status_txt}", f"{len(live):,}")
     med = live["price"].median()
     k[1].metric("Median price", money(med),
                 help="The middle price: half the cars cost less, half cost more.")
@@ -431,7 +444,7 @@ def render(DS):
     with c1:
         st.subheader(f"Price per {grain_txt} — most listed cars")
         chosen = st.multiselect("Cars", sorted(df["car"].unique()), default=top_cars[:5],
-                                key=f"{DS['kind']}_cars_{'|'.join(pick + pick_model + [str(y) for y in pick_year] + pick_market + [pick_km])}",
+                                key=f"{DS['kind']}_cars_{'|'.join(pick + pick_model + [str(y) for y in pick_year] + pick_market + [pick_km] + pick_status)}",
                                 label_visibility="collapsed")
         line = per[per["car"].isin(chosen)].groupby(["period", "car"])["price"]\
             .median().reset_index()
@@ -490,6 +503,100 @@ def render(DS):
         fig.update_yaxes(categoryorder="total ascending", title=None)
         fig.update_xaxes(title=None, showticklabels=False)
         st.plotly_chart(fig, width="stretch")
+
+    # ------------------------------------------------------------------ car list + details
+    st.divider()
+    st.subheader("🚘 Cars — click a row to see its details")
+    cars = df.sort_values(["last_seen_at", "first_seen_at"], ascending=False).copy()
+    if "days_online" not in cars.columns:
+        cars["days_online"] = (cars["last_seen_at"] - cars["first_seen_at"]).dt.days
+    MAX_ROWS = 3000
+    list_cols = [c for c in ["image_1", "car", "trim", "mileage_km", "price", "seller_name", "city",
+                             "market", "ad_status", "first_seen_at", "days_online", "url"]
+                 if c in cars.columns and not (c == "market" and cars["market"].nunique() < 2)]
+    table_cfg = {
+        "image_1": st.column_config.ImageColumn("Photo", width="small"),
+        "car": "Car", "trim": "Trim", "seller_name": "Dealer", "city": "City",
+        "market": "Market", "ad_status": "Status",
+        "mileage_km": st.column_config.NumberColumn("km", format="%d"),
+        "price": st.column_config.NumberColumn(f"Price ({CUR})", format="%d"),
+        "first_seen_at": st.column_config.DateColumn("First seen", format="DD MMM YYYY"),
+        "days_online": st.column_config.NumberColumn("Days online"),
+        "url": st.column_config.LinkColumn("Ad", display_text="open")}
+    shown = cars.head(MAX_ROWS).reset_index(drop=True)
+    try:
+        ev = st.dataframe(shown[list_cols], hide_index=True, width="stretch", height=420,
+                          column_config=table_cfg, on_select="rerun",
+                          selection_mode="single-row", key=f"{DS['kind']}_cars_table")
+        sel = ev.selection.rows if ev is not None else []
+    except TypeError:                                   # older Streamlit: no row clicks
+        st.dataframe(shown[list_cols], hide_index=True, width="stretch", height=420,
+                     column_config=table_cfg)
+        sel = []
+    st.caption(f"{len(cars):,} car(s) with the filters above"
+               + (f" - showing the latest {MAX_ROWS:,}" if len(cars) > MAX_ROWS else "")
+               + ". Click the box at the start of a row to open the car.")
+
+    if sel:
+        car = shown.iloc[sel[0]]
+        with st.container(border=True):
+            imgs = [car.get(c) for c in ("image_1", "image_2", "image_3")]
+            imgs = [u for u in imgs if isinstance(u, str) and u.startswith("http")]
+            t1, t2 = st.columns([1.2, 2], gap="large")
+            with t1:
+                if imgs:
+                    st.image(imgs[0], width="stretch")
+                    if len(imgs) > 1:
+                        for col, u in zip(st.columns(len(imgs) - 1), imgs[1:]):
+                            col.image(u, width="stretch")
+                else:
+                    st.info("No photo for this ad.")
+                if isinstance(car.get("url"), str):
+                    st.link_button("Open the ad on the site ↗", car["url"], width="stretch")
+            with t2:
+                st.markdown(f"### {car['car']}" + (f" · {car['trim']}" if isinstance(car.get('trim'), str)
+                                                    and car['trim'] else ""))
+                p = car.get("price")
+                st.markdown(f"**{money(p) if pd.notna(p) else 'Price on request'}** · "
+                            f"{car.get('ad_status', '')}")
+                facts = [("Year", "year"), ("Condition", "condition"), ("km", "mileage_km"),
+                         ("Specs", "regional_specs"), ("Body", "body_type"), ("Fuel", "fuel_type"),
+                         ("Gearbox", "transmission"), ("Drive", "drivetrain"),
+                         ("Engine", "engine_band"), ("Cylinders", "cylinders"),
+                         ("Horsepower", "horsepower"), ("Doors", "doors"), ("Seats", "seats"),
+                         ("Colour", "exterior_colour"), ("Interior", "interior_colour"),
+                         ("Dealer", "seller_name"), ("Seller type", "seller_type"),
+                         ("City", "city"), ("Market", "market"),
+                         ("First seen", "first_seen_at"), ("Last seen", "last_seen_at"),
+                         ("Days online", "days_online"), ("Removed on", "removed_at"),
+                         ("Price changes", "price_change_count"), ("Note", "note")]
+                def fmt(v):
+                    if isinstance(v, pd.Timestamp):
+                        return f"{v:%d %b %Y}"
+                    if isinstance(v, float) and v.is_integer():
+                        return f"{int(v):,}"
+                    return str(v)
+                rows = [(lab, str(int(car[c])) if c == "year" else fmt(car[c])) for lab, c in facts
+                        if c in car.index and pd.notna(car[c]) and str(car[c]).strip() not in ("", "nan")]
+                half = (len(rows) + 1) // 2
+                for col, part in zip(st.columns(2), (rows[:half], rows[half:])):
+                    col.markdown("\n".join(f"- **{a}:** {b}" for a, b in part))
+            hp = daily[daily["_key"] == car["_key"]].dropna(subset=["price"])
+            if hp["price"].nunique() > 1:
+                fig = px.line(hp, x="day", y="price", markers=False)
+                fig.update_layout(height=220, margin=dict(l=0, r=0, t=30, b=0),
+                                  title=f"Price history ({CUR})")
+                fig.update_xaxes(title=None)
+                fig.update_yaxes(title=None, tickformat=",.0f")
+                st.plotly_chart(fig, width="stretch")
+            elif len(hp):
+                st.caption(f"Price has not changed since {hp['day'].min():%d %b %Y}.")
+            desc = car.get("description")
+            if isinstance(desc, str) and desc.strip():
+                with st.expander("Description", expanded=True):
+                    st.write(desc)
+            else:
+                st.caption("No description for this ad yet.")
 
     # ------------------------------------------------------------------ price changes per ad
     def last_changes(daily, df):
