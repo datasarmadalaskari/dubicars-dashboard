@@ -158,6 +158,7 @@ def read_dubicars(xl):
     df["price"] = usd.where(usd > 0, aed / aed_rate)                     # base = USD
     df["ad_status"] = col("ad_status", "").fillna("").astype(str).str.strip().replace("", "Active")
     df["market"] = "UAE"
+    df["site"] = "DubiCars"
     h = pd.DataFrame({"_key": hist[key].astype(str),
                       "checked_at": pd.to_datetime(hist["checked_at"], errors="coerce"),
                       "price": _num(hist["price_aed"]) / aed_rate})
@@ -174,6 +175,8 @@ def read_luxury(xl):
     df["price"] = usd
     df["ad_status"] = df["status"].fillna("Active").astype(str).str.strip()
     df["market"] = df["country"].map({"CA": "Canada", "AE": "UAE"}).fillna(df["country"])
+    df["site"] = df["source"].map({"autotrader_ca": "Autotrader", "dubizzle_ae": "Dubizzle"})\
+        .fillna(df["source"])
     cur = hist["currency"].fillna("USD").str.upper().map(rates).fillna(1.0)
     # car_listing_id = the car's current ad, so a re-posted car keeps one price line
     hid = hist["car_listing_id"] if "car_listing_id" in hist.columns else hist["listing_id"]
@@ -263,13 +266,21 @@ def render(DS):
     # ---- filters: (market) -> make -> model (only models of the chosen makes) -> year
     df["model_t"] = df["model"].str.title()
     markets = sorted(m for m in df["market"].dropna().unique() if m)
-    if len(markets) > 1:
+    sites = sorted(x for x in df["site"].dropna().unique() if x)
+    pick_site = []
+    if len(sites) > 1:
+        fs, f0, f1, f2, f3 = st.columns([0.9, 0.8, 1, 1.4, 1])
+        pick_site = fs.multiselect("Site", sites, key=f"{DS['kind']}_site", placeholder="All sites",
+                                   help="Autotrader = Canada (autotrader.ca), Dubizzle = UAE")
+        pick_market = f0.multiselect("Market", markets, key=f"{DS['kind']}_market", placeholder="All markets")
+    elif len(markets) > 1:
         f0, f1, f2, f3 = st.columns([0.8, 1, 1.4, 1])
         pick_market = f0.multiselect("Market", markets, key=f"{DS['kind']}_market", placeholder="All markets")
     else:
         f1, f2, f3 = st.columns([1, 1.4, 1])
         pick_market = []
-    sub = df[df["market"].isin(pick_market)] if pick_market else df
+    sub = df[df["site"].isin(pick_site)] if pick_site else df
+    sub = sub[sub["market"].isin(pick_market)] if pick_market else sub
     makes = sorted(m for m in sub["make"].unique() if m)
     pick = f1.multiselect("Make", makes, key=f"{DS['kind']}_make", placeholder="All makes")
     if pick:
@@ -301,6 +312,8 @@ def render(DS):
     FX = RATES.get(CUR, 1.0)
     df = df.assign(price=df["price"] * FX)
     daily = daily.assign(price=daily["price"] * FX)
+    if pick_site:
+        df = df[df["site"].isin(pick_site)]
     if pick_market:
         df = df[df["market"].isin(pick_market)]
     if pick:
@@ -422,11 +435,13 @@ def render(DS):
             res = res.sort_values(["ad_status", "last_seen_at"], ascending=[True, False])
             n_live = int((res["ad_status"] == "Active").sum())
             st.caption(f"**{len(res):,}** car(s) mention “{q.strip()}” · {n_live:,} still for sale")
-            cols = [c for c in ["image_1", "car", "trim", "seller_name", "price", "mileage_km",
-                                "ad_status", "found", "url"] if c in res.columns]
+            cols = [c for c in ["image_1", "site", "car", "trim", "seller_name", "price", "mileage_km",
+                                "ad_status", "found", "url"] if c in res.columns
+                    and not (c == "site" and len(sites) < 2)]
             st.dataframe(res[cols].head(500), hide_index=True, width="stretch", height=380,
                          column_config={
                              "image_1": st.column_config.ImageColumn("Photo", width="small"),
+                             "site": "Site",
                              "car": "Car", "trim": "Trim", "seller_name": "Dealer",
                              "price": st.column_config.NumberColumn(f"Price ({CUR})", format="%d"),
                              "mileage_km": st.column_config.NumberColumn("km", format="%d"),
@@ -444,7 +459,7 @@ def render(DS):
     with c1:
         st.subheader(f"Price per {grain_txt} — most listed cars")
         chosen = st.multiselect("Cars", sorted(df["car"].unique()), default=top_cars[:5],
-                                key=f"{DS['kind']}_cars_{'|'.join(pick + pick_model + [str(y) for y in pick_year] + pick_market + [pick_km] + pick_status)}",
+                                key=f"{DS['kind']}_cars_{'|'.join(pick + pick_model + [str(y) for y in pick_year] + pick_market + pick_site + [pick_km] + pick_status)}",
                                 label_visibility="collapsed")
         line = per[per["car"].isin(chosen)].groupby(["period", "car"])["price"]\
             .median().reset_index()
@@ -511,13 +526,13 @@ def render(DS):
     if "days_online" not in cars.columns:
         cars["days_online"] = (cars["last_seen_at"] - cars["first_seen_at"]).dt.days
     MAX_ROWS = 3000
-    list_cols = [c for c in ["image_1", "car", "trim", "mileage_km", "price", "seller_name", "city",
-                             "market", "ad_status", "first_seen_at", "days_online", "url"]
-                 if c in cars.columns and not (c == "market" and cars["market"].nunique() < 2)]
+    list_cols = [c for c in ["image_1", "site", "car", "trim", "mileage_km", "price", "seller_name",
+                             "city", "market", "ad_status", "first_seen_at", "days_online", "url"]
+                 if c in cars.columns and not (c in ("market", "site") and len(sites) < 2)]
     table_cfg = {
         "image_1": st.column_config.ImageColumn("Photo", width="small"),
         "car": "Car", "trim": "Trim", "seller_name": "Dealer", "city": "City",
-        "market": "Market", "ad_status": "Status",
+        "market": "Market", "ad_status": "Status", "site": "Site",
         "mileage_km": st.column_config.NumberColumn("km", format="%d"),
         "price": st.column_config.NumberColumn(f"Price ({CUR})", format="%d"),
         "first_seen_at": st.column_config.DateColumn("First seen", format="DD MMM YYYY"),
@@ -566,7 +581,7 @@ def render(DS):
                          ("Horsepower", "horsepower"), ("Doors", "doors"), ("Seats", "seats"),
                          ("Colour", "exterior_colour"), ("Interior", "interior_colour"),
                          ("Dealer", "seller_name"), ("Seller type", "seller_type"),
-                         ("City", "city"), ("Market", "market"),
+                         ("City", "city"), ("Site", "site"), ("Market", "market"),
                          ("First seen", "first_seen_at"), ("Last seen", "last_seen_at"),
                          ("Days online", "days_online"), ("Removed on", "removed_at"),
                          ("Price changes", "price_change_count"), ("Note", "note")]
@@ -637,7 +652,7 @@ def render(DS):
         if lc.empty:
             st.info("No ad has changed its price yet.")
         else:
-            cols = ["_key", "car", "seller_name"] + (["url"] if "url" in df.columns else [])
+            cols = ["_key", "car", "site", "seller_name"] + (["url"] if "url" in df.columns else [])
             lc = lc.merge(df[cols], on="_key")
             o1, o2 = st.columns([2, 1])
             order = o1.radio("Sort by", ["Most recent change", "Biggest change %", "Longest at old price"],
@@ -655,14 +670,14 @@ def render(DS):
                 lc = lc.reindex(lc["change_pct"].abs().sort_values(ascending=False).index)
             else:
                 lc = lc.sort_values("days_at_old_price", ascending=False)
-            show = ["car", "seller_name", "old_price", "since", "changed_on", "days_at_old_price",
+            show = ["car"] + (["site"] if len(sites) > 1 else []) + ["seller_name", "old_price", "since", "changed_on", "days_at_old_price",
                     "new_price", "days_at_new_price", "change_pct", "changes"] + \
                    (["url"] if "url" in lc.columns else [])
             st.caption(f"{len(lc):,} ads changed price. Dates are scrape dates: 'changed on' is the first "
                        "scrape that saw the new price. Days at new price = until the ad was last seen.")
             st.dataframe(lc[show], hide_index=True, width="stretch", height=420,
                          column_config={
-                             "car": "Car", "seller_name": "Dealer",
+                             "car": "Car", "site": "Site", "seller_name": "Dealer",
                              "old_price": st.column_config.NumberColumn(f"Old price ({CUR})", format="%d"),
                              "since": st.column_config.DateColumn("Since", format="DD MMM YYYY"),
                              "changed_on": st.column_config.DateColumn("Changed on", format="DD MMM YYYY"),
