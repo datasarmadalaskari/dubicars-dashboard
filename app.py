@@ -188,8 +188,11 @@ def read_luxury(xl):
     return df, h, rates, src
 
 
+CACHE_VERSION = 2      # bump when the loaded columns change, so old cached data is not reused
+
+
 @st.cache_data(show_spinner="Loading...")
-def load(src, stamp, kind):                 # stamp in the key -> reloads when the file changes
+def load(src, stamp, kind, version=CACHE_VERSION):   # stamp in the key -> reloads when the file changes
     xl = open_book(src)
     df, hist, rates, source = (read_luxury if kind == "luxury" else read_dubicars)(xl)
     col = lambda c, d=None: df[c] if c in df.columns else pd.Series(d, index=df.index)
@@ -246,6 +249,10 @@ def render(DS):
         st.error(f"Couldn't load the data: {e}")
         return
     updated = updated.tz_convert("Asia/Amman") if pd.notna(updated) else None
+    if "site" not in df.columns:                 # data cached by an older version of the app
+        df = df.assign(site=df["source"].map({"autotrader_ca": "Autotrader",
+                                              "dubizzle_ae": "Dubizzle"}).fillna(df["source"])
+                       if "source" in df.columns else "DubiCars")
     last_scrape = df["last_seen_at"].max()
 
     # ------------------------------------------------------------------ header + filter
