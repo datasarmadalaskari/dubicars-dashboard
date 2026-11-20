@@ -270,7 +270,7 @@ def render(DS):
     sites = sorted(x for x in df["site"].dropna().unique() if x)
     statuses = sorted(df["ad_status"].dropna().unique(),
                       key=lambda x: (x != "Active", x != "Removed", x))
-    filter_keys = [f"{K}_{n}" for n in ("site", "market", "make", "model", "year", "status", "km")]
+    filter_keys = [f"{K}_{n}" for n in ("site", "market", "make", "model", "year", "status", "km", "noprice")]
     if sb.button("✕ Clear filters", key=f"{K}_clear", width="stretch"):
         for fk in filter_keys:
             st.session_state.pop(fk, None)
@@ -282,6 +282,9 @@ def render(DS):
                                  key=f"{K}_status", placeholder="All statuses",
                                  help="Starts on Active = cars for sale now. Add Removed to see "
                                       "sold / taken-down ads too, or clear it for all.")
+    # NEW: hide ads with no price ("price on request")
+    hide_no_price = sb.checkbox("Hide cars without a price", key=f"{K}_noprice",
+                                help="Leaves out ads that show 'price on request'.")
     pick_site = sb.multiselect("Site", sites, key=f"{K}_site", placeholder="All sites",
                                help="Autotrader = Canada (autotrader.ca), Dubizzle = UAE") \
         if len(sites) > 1 else []
@@ -334,6 +337,9 @@ def render(DS):
         df = df[(km < KM_CUT) if pick_km == km_opts[1] else (km >= KM_CUT)]
     if pick_status:
         df = df[df["ad_status"].isin(pick_status)]
+    # NEW: drop ads without a real price (blank, NaN or 0)
+    if hide_no_price:
+        df = df[df["price"].notna() & (df["price"] > 0)]
     daily = daily[daily["_key"].isin(df["_key"])]
     if df.empty:
         st.warning("No cars match these filters.")
