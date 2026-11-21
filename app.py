@@ -1,18 +1,3 @@
-"""
-Car market dashboard (Streamlit) - two datasets, one page each:
-  * Chinese-spec cars, UAE (DubiCars)        -> dubicars_chinese.xlsx
-  * Luxury cars, Canada + UAE (Autotrader/Dubizzle) -> luxury_cars.xlsx
-
-Runs on Streamlit Community Cloud. Reads the Excel files from Google Drive -
-the daily 07:00 run on the VPS replaces those same Drive files, so the
-dashboard shows the latest scrape (re-checked every 15 min, or ↻ Refresh).
-
-Secrets (Streamlit Cloud -> app -> Settings -> Secrets):
-    drive_link         = "<Drive link of dubicars_chinese.xlsx>"
-    drive_link_luxury  = "<Drive link of luxury_cars.xlsx>"
-    password           = "..."          # optional
-Without the links it looks for the files next to this app.
-"""
 import hmac
 import io
 import os
@@ -411,13 +396,18 @@ def render(DS):
     k[3].metric("Cars that got cheaper", f"{cut:,}", f"{rise:,} got more expensive",
                 delta_color="off")
 
-    # cars online per month (from the daily grid, after the filters)
-    online = per.groupby("period")["_key"].nunique()
-    if len(online) >= 2:
-        d_n = int(online.iloc[-1] - online.iloc[-2])
-        st.caption(f"🚗 Cars online: **{int(online.iloc[-1]):,}** in {online.index[-1]:%b} vs "
-                   f"**{int(online.iloc[-2]):,}** in {online.index[-2]:%b} "
-                   f"({'+' if d_n >= 0 else ''}{d_n:,})")
+    # cars online per week (from the daily grid, after the filters) - always shown
+    wk = (daily.assign(week=daily["day"].dt.to_period("W").dt.start_time)
+               .groupby("week")["_key"].nunique().rename("cars").reset_index())
+    wk["change"] = wk["cars"].diff()
+    if len(wk):
+        st.subheader("📅 Cars online per week")
+        st.dataframe(wk.iloc[::-1], hide_index=True, width="stretch",
+                     column_config={
+                         "week": st.column_config.DateColumn("Week starting", format="DD MMM YYYY"),
+                         "cars": st.column_config.NumberColumn("Cars online"),
+                         "change": st.column_config.NumberColumn("vs previous week", format="%+d")})
+        st.caption("The latest week is up to today, so its count can still change.")
 
     rate_cur = CUR if CUR != "USD" else next(c for c in DS["currencies"] if c != "USD")
     file_rate = RATES.get(rate_cur, 1.0)
