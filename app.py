@@ -411,6 +411,14 @@ def render(DS):
     k[3].metric("Cars that got cheaper", f"{cut:,}", f"{rise:,} got more expensive",
                 delta_color="off")
 
+    # cars online per month (from the daily grid, after the filters)
+    online = per.groupby("period")["_key"].nunique()
+    if len(online) >= 2:
+        d_n = int(online.iloc[-1] - online.iloc[-2])
+        st.caption(f"🚗 Cars online: **{int(online.iloc[-1]):,}** in {online.index[-1]:%b} vs "
+                   f"**{int(online.iloc[-2]):,}** in {online.index[-2]:%b} "
+                   f"({'+' if d_n >= 0 else ''}{d_n:,})")
+
     rate_cur = CUR if CUR != "USD" else next(c for c in DS["currencies"] if c != "USD")
     file_rate = RATES.get(rate_cur, 1.0)
     lr = live_rate(rate_cur)
