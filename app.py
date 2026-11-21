@@ -36,7 +36,7 @@ DATASETS = {
 }
 TOP_N = 10
 KM_CUT = 150                  # mileage filter on the Chinese-spec tab: under / over this
-PEG = 3.6725                  # 1 USD = 3.6725 AED (UAE fixed peg)
+PEG = 3.67                    # 1 USD = 3.67 AED (UAE fixed peg)
 UP, DOWN, FLAT = "#d1495b", "#2a9d8f", "#8d99ae"   # price up = red, down = green
 
 st.markdown("""<style>
@@ -270,7 +270,7 @@ def render(DS):
     sites = sorted(x for x in df["site"].dropna().unique() if x)
     statuses = sorted(df["ad_status"].dropna().unique(),
                       key=lambda x: (x != "Active", x != "Removed", x))
-    filter_keys = [f"{K}_{n}" for n in ("site", "market", "make", "model", "year", "status", "km", "noprice")]
+    filter_keys = [f"{K}_{n}" for n in ("site", "market", "make", "model", "year", "status", "km", "noprice", "changed")]
     if sb.button("✕ Clear filters", key=f"{K}_clear", width="stretch"):
         for fk in filter_keys:
             st.session_state.pop(fk, None)
@@ -285,6 +285,8 @@ def render(DS):
     # NEW: hide ads with no price ("price on request")
     hide_no_price = sb.checkbox("Hide cars without a price", key=f"{K}_noprice",
                                 help="Leaves out ads that show 'price on request'.")
+    only_changed = sb.checkbox("Only cars whose price changed", key=f"{K}_changed",
+                               help="Shows only ads whose price moved (up or down) since the first scrape.")
     pick_site = sb.multiselect("Site", sites, key=f"{K}_site", placeholder="All sites",
                                help="Autotrader = Canada (autotrader.ca), Dubizzle = UAE") \
         if len(sites) > 1 else []
@@ -322,6 +324,14 @@ def render(DS):
     FX = RATES.get(CUR, 1.0)
     df = df.assign(price=df["price"] * FX)
     daily = daily.assign(price=daily["price"] * FX)
+    # each ad's first vs last price over its whole history (before any filter)
+    span_px = daily.dropna(subset=["price"]).sort_values("day").groupby("_key")["price"].agg(["first", "last"])
+    diff_px = span_px["last"] - span_px["first"]
+    changed_keys = set(diff_px[diff_px.abs() > 0.5].index)
+    flag_map = pd.Series("", index=diff_px.index)
+    flag_map[diff_px < -0.5] = "⬇️ cheaper"
+    flag_map[diff_px > 0.5] = "⬆️ pricier"
+    df["price_flag"] = df["_key"].map(flag_map).fillna("")
     if pick_site:
         df = df[df["site"].isin(pick_site)]
     if pick_market:
@@ -340,6 +350,8 @@ def render(DS):
     # NEW: drop ads without a real price (blank, NaN or 0)
     if hide_no_price:
         df = df[df["price"].notna() & (df["price"] > 0)]
+    if only_changed:
+        df = df[df["_key"].isin(changed_keys)]
     daily = daily[daily["_key"].isin(df["_key"])]
     if df.empty:
         st.warning("No cars match these filters.")
@@ -406,14 +418,14 @@ def render(DS):
     if lr:
         rate, when, src = lr
         diff = (file_rate / rate - 1) * 100
-        k[4].metric("1 USD =", f"{file_rate:.4f} {rate_cur}", f"today {rate:.4f} ({diff:+.2f}%)",
+        k[4].metric("1 USD =", f"{file_rate:.4f}".rstrip("0").rstrip(".") + f" {rate_cur}", f"today {rate:.4f} ({diff:+.2f}%)",
                     delta_color="off",
                     help=f"Rate used in our data: {file_rate:.4f} {rate_cur}"
                          + (" (UAE fixed peg - the AED is pegged to the USD, so the difference is ~0)."
                             if pegged else " (the scraper's rate at the time it saved the prices).")
                          + f" Market rate today from {src} ({when}).")
     else:
-        k[4].metric("1 USD =", f"{file_rate:.4f} {rate_cur}",
+        k[4].metric("1 USD =", f"{file_rate:.4f}".rstrip("0").rstrip(".") + f" {rate_cur}",
                     "UAE fixed peg" if pegged else "rate used in our data", delta_color="off",
                     help="Today's market rate couldn't be loaded right now.")
 
@@ -540,12 +552,13 @@ def render(DS):
         cars["days_online"] = (cars["last_seen_at"] - cars["first_seen_at"]).dt.days
     MAX_ROWS = 3000
     list_cols = [c for c in ["image_1", "site", "car", "trim", "mileage_km", "price", "seller_name",
-                             "city", "market", "ad_status", "first_seen_at", "days_online", "url"]
+                             "city", "market", "ad_status", "price_flag", "first_seen_at", "days_online", "url"]
                  if c in cars.columns and not (c in ("market", "site") and len(sites) < 2)]
     table_cfg = {
         "image_1": st.column_config.ImageColumn("Photo", width="small"),
         "car": "Car", "trim": "Trim", "seller_name": "Dealer", "city": "City",
         "market": "Market", "ad_status": "Status", "site": "Site",
+        "price_flag": "Price change",
         "mileage_km": st.column_config.NumberColumn("km", format="%d"),
         "price": st.column_config.NumberColumn(f"Price ({CUR})", format="%d"),
         "first_seen_at": st.column_config.DateColumn("First seen", format="DD MMM YYYY"),
