@@ -396,17 +396,23 @@ def render(DS):
     k[3].metric("Cars that got cheaper", f"{cut:,}", f"{rise:,} got more expensive",
                 delta_color="off")
 
-    # cars online per week (from the daily grid, after the filters) - always shown
-    wk = (daily.assign(week=daily["day"].dt.to_period("W").dt.start_time)
-               .groupby("week")["_key"].nunique().rename("cars").reset_index())
-    wk["change"] = wk["cars"].diff()
-    if len(wk):
-        st.subheader("📅 Cars online per week")
-        st.dataframe(wk.iloc[::-1], hide_index=True, width="stretch",
+    # ads online per week, by make or by car (from the daily grid, after the filters) - always shown
+    wk_by = st.radio("Count by", ["Make", "Car"], horizontal=True, key=f"{K}_wk_by")
+    grp = "make" if wk_by == "Make" else "car"
+    wdf = daily.assign(week=daily["day"].dt.to_period("W").dt.start_time)
+    pv = wdf.groupby([grp, "week"])["_key"].nunique().unstack("week", fill_value=0)
+    if len(pv.columns):
+        pv = pv.sort_values(pv.columns[-1], ascending=False)
+        weeks = list(pv.columns)
+        pv.columns = [f"{c:%d %b}" for c in weeks]
+        if len(weeks) >= 2:
+            pv["change"] = pv.iloc[:, -1] - pv.iloc[:, -2]
+        pv = pv.reset_index().rename(columns={grp: wk_by})
+        st.subheader(f"📅 Ads online per week, by {wk_by.lower()}")
+        st.dataframe(pv, hide_index=True, width="stretch", height=420,
                      column_config={
-                         "week": st.column_config.DateColumn("Week starting", format="DD MMM YYYY"),
-                         "cars": st.column_config.NumberColumn("Cars online"),
-                         "change": st.column_config.NumberColumn("vs previous week", format="%+d")})
+                         "change": st.column_config.NumberColumn(
+                             "Change (last vs previous week)", format="%+d")})
         st.caption("The latest week is up to today, so its count can still change.")
 
     rate_cur = CUR if CUR != "USD" else next(c for c in DS["currencies"] if c != "USD")
